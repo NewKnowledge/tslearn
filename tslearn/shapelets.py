@@ -15,7 +15,7 @@ import keras.backend as K
 from keras.engine import InputSpec
 import numpy
 from tensorflow import set_random_seed
-
+from keras.utils import Sequence
 from tslearn.utils import to_time_series_dataset
 from tslearn.clustering import TimeSeriesKMeans
 
@@ -319,6 +319,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
     def fit(self, X, y):
         """Learn time-series shapelets.
+        Helper fit function that supports fit and fit_generator
 
         Parameters
         ----------
@@ -348,6 +349,9 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self.locator_model.compile(loss="mean_squared_error",
                                    optimizer=self.optimizer)
         self._set_weights_false_conv(d=d)
+
+        # generate training and validation sets
+
         self.model.fit([X[:, :, di].reshape((n_ts, sz, 1)) for di in range(d)],
                        y_,
                        batch_size=self.batch_size,
@@ -612,3 +616,30 @@ class SerializableShapeletModel(ShapeletModel):
 
     def set_params(self, **params):
         return super(SerializableShapeletModel, self).set_params(**params)
+
+class ShapeletSequence(Sequence):
+    ''' Generates a sequence of time series data
+        
+        x_set: set of input time series data
+        y_set: set of output time series label
+    '''
+
+    def __init__(self, x_set, y_set, batch_size=256, shuffle = True):
+        self.batch_size = batch_size
+        if shuffle:
+            inds = numpy.arange(x_set.shape[0])
+            numpy.random.shuffle(inds)
+            self.x = x_set[inds]
+            self.y = y.set[inds]
+        else:
+            self.x = x_set
+            self.y = y.set
+
+    def __len__(self):
+        return int(np.ceil(len(self.x) / float(self.batch_size)))
+
+    def __getitem__(self, idx):
+        batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
+
+        return np.array([batch_x[:, :, di].reshape((self.x.shape[0], self.x.shape[1], 1)) for di in range(self.x.shape[2])]), np.array(batch_y)
