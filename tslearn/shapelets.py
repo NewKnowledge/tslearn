@@ -440,10 +440,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
         #callbacks = self._get_callbacks(source_dir, self.batch_size)
 
-        # data providing function
-        def data():
-            return X_train, y_train, X_val, y_val
-        
         self.model.fit([X_train[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_train,
                        batch_size = {{choice([64, 128, 256, 512])}},
                        epochs=epochs,
