@@ -13,6 +13,11 @@ from keras.regularizers import l2
 from keras.initializers import Initializer
 import keras.backend as K
 from keras.engine import InputSpec
+from keras.callbacks import (ModelCheckpoint, ReduceLROnPlateau, TensorBoard, TerminateOnNan, EarlyStopping)
+import os
+from datetime import datetime
+import time
+
 import numpy
 from tensorflow import set_random_seed
 from keras.utils import Sequence
@@ -317,7 +322,31 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             shapelets[i, :sz, :] = non_formatted_shapelets[i]
         return shapelets
 
-    def fit(self, X, y):
+    def _get_timestamp(self):
+        return datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%H-%M-%S')
+
+    def _get_checkpoint_path(self, source_dir, timestamp):
+        data_dir, data_fname = os.path.split(source_dir)
+        data_fname += timestamp
+        return os.path.join(data_dir, 'weights', data_fname + '_{epoch:02d}-{val_loss:.4f}.h5')
+
+    def _get_callbacks(self, source_dir, batch_size, chkpt_period = 1):
+        terminate_on_nan = TerminateOnNan()
+
+        timestamp = self._get_timestamp()
+        tb_logdir = 'logs/{0}'.format(timestamp)
+        tensorboard = TensorBoard(tb_logdir, histogram_freq = 0, batch_size = batch_size)
+        reducelr = ReduceLROnPlateau(factor = 0.2, patience = 3)
+        checkpoint_path = self._get_checkpoint_path(source_dir, timestamp)
+        chkpt_dir = os.path.split(checkpoint_path)[0]
+        if not os.path.isdir(chkpt_dir):
+            os.makedirs(chkpt_dir)
+        checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period)
+        earlystopping = EarlyStopping(monitor = 'val_loss', patience =100)
+
+        return [terminate_on_nan, reducelr] # add in earlystopping, tensorboard, checkpointer for real training runs
+
+    def fit(self, X, y, source_dir, train_split = 0.7):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -351,12 +380,18 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_weights_false_conv(d=d)
 
         # generate training and validation sets
+        # if data is chronologically ordered - take first 70% as training, last 30% as validation
+        split = train_split * X.shape[0]
+        train_gen = ShapeletSequence(X[:split], y[:split], self.batch_size, shuffle=True, random_state=self.random_state)
+        val_gen = ShapeletSequence(X[split:], y[split:], self.batch_size, shuffle=True, random_state=self.random_state)
 
-        self.model.fit([X[:, :, di].reshape((n_ts, sz, 1)) for di in range(d)],
-                       y_,
-                       batch_size=self.batch_size,
+        callbacks = self._get_callbacks(source_dir, self.batch_size)
+        self.model.fit_generator(train_gen, validation_data = val_gen, 
+                       callbacks = callbacks,
                        epochs=self.max_iter,
-                       verbose=self.verbose_level)
+                       verbose=self.verbose_level, 
+                       workers = 10, 
+                       use_multiprocessing = True)
         return self
 
     def predict(self, X):
@@ -448,6 +483,8 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             for di in range(d):
                 self.model.get_layer("false_conv_%d_%d" % (i, di)).set_weights([numpy.eye(sz).reshape((sz, 1, sz))])
 
+    
+    
     def _set_model_layers(self, X, ts_sz, d, n_classes):
         inputs = [Input(shape=(ts_sz, 1), name="input_%d" % di) for di in range(d)]
         shapelet_sizes = sorted(self.n_shapelets_per_size.keys())
@@ -624,9 +661,10 @@ class ShapeletSequence(Sequence):
         y_set: set of output time series label
     '''
 
-    def __init__(self, x_set, y_set, batch_size=256, shuffle = True):
+    def __init__(self, x_set, y_set, batch_size=256, shuffle = True, random_state = None):
         self.batch_size = batch_size
         if shuffle:
+            numpy.random.seed(seed=random_state)
             inds = numpy.arange(x_set.shape[0])
             numpy.random.shuffle(inds)
             self.x = x_set[inds]
@@ -642,4 +680,4 @@ class ShapeletSequence(Sequence):
         batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
 
-        return np.array([batch_x[:, :, di].reshape((self.x.shape[0], self.x.shape[1], 1)) for di in range(self.x.shape[2])]), np.array(batch_y)
+        return numpy.array([batch_x[:, :, di].reshape((self.x.shape[0], self.x.shape[1], 1)) for di in range(self.x.shape[2])]), numpy.array(batch_y)
