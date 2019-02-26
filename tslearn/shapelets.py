@@ -17,6 +17,9 @@ from keras.callbacks import (ModelCheckpoint, ReduceLROnPlateau, TensorBoard, Te
 import os
 from datetime import datetime
 import time
+from hyperopt import Trials, STATUS_OK, tpe
+from hyperas import optim
+from hyperas.distributions import choice
 
 import numpy
 from tensorflow import set_random_seed
@@ -346,7 +349,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
         return [terminate_on_nan, reducelr] # add in earlystopping, tensorboard, checkpointer for real training runs
 
-    def fit(self, X, y, source_dir, train_split = 0.7):
+    def _fit_helper(self, X, y):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -372,7 +375,22 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             n_classes = 2
         else:
             n_classes = y_.shape[1]
-        self._set_model_layers(X=X, ts_sz=sz, d=d, n_classes=n_classes)
+        
+        return n_ts, sz, n_classes
+
+    def fit(self, X, y, source_dir, train_split = 0.7):
+        """Learn time-series shapelets.
+        Helper fit function that supports fit and fit_generator
+
+        Parameters
+        ----------
+        X : array-like of shape=(n_ts, sz, d)
+            Time series dataset.
+        y : array-like of shape=(n_ts, )
+            Time series labels.
+        """
+        _, sz, n_classes = self._fit_helper(X, y)
+        self._set_model_layers(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
         self.transformer_model.compile(loss="mean_squared_error",
                                        optimizer=self.optimizer)
         self.locator_model.compile(loss="mean_squared_error",
@@ -393,6 +411,51 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        workers = 10, 
                        use_multiprocessing = True)
         return self
+
+    def fit_hp_opt(self, X, y, source_dir, train_split = 0.7, epochs = 100):
+        """Learn time-series shapelets.
+        Helper fit function that supports fit and fit_generator
+
+        Parameters
+        ----------
+        X : array-like of shape=(n_ts, sz, d)
+            Time series dataset.
+        y : array-like of shape=(n_ts, )
+            Time series labels.
+        """
+        n_ts, sz, n_classes = self._fit_helper(X, y)
+        self._set_model_layers_hp_opt(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
+        self.transformer_model.compile(loss="mean_squared_error",
+                                       optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}})
+        self.locator_model.compile(loss="mean_squared_error",
+                                   optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}})
+        self._set_weights_false_conv(d=self.d)
+
+        # for HP tuning simply fit once, no generator
+        split = train_split * X.shape[0]
+        X_train, y_train = X[:split], y[:split]
+        X_val, y_val = X[split:], y[split:]
+        #train_gen = ShapeletSequence(X[:split], y[:split], self.batch_size, shuffle=True, random_state=self.random_state)
+        #val_gen = ShapeletSequence(X[split:], y[split:], self.batch_size, shuffle=True, random_state=self.random_state)
+
+        #callbacks = self._get_callbacks(source_dir, self.batch_size)
+
+        # data providing function
+        def data():
+            return X_train, y_train, X_val, y_val
+        
+        self.model.fit([X_train[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_train,
+                       batch_size = {{choice([64, 128, 256, 512])}},
+                       epochs=epochs,
+                       verbose=self.verbose_level, 
+                       validation_data = (X_val, y_val)
+                       )
+        _, acc = self.model.evaluate(X_val, y_val, show_accuracy = True, verbose = 0)
+        best_run, best_model = optim.minimize(model = {'loss':-acc, 'status': STATUS_OK, 'model': self.model}, 
+            data = (lambda: X_train, y_train, X_val, y_val), algo = tpe.suggest, max_evals = 10, trials = Trials())
+        print('Best performing model chosen hyper-parameters:')
+        print(best_run)
+        return best_run, best_model
 
     def predict(self, X):
         """Predict class for a given set of time series.
@@ -483,9 +546,8 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             for di in range(d):
                 self.model.get_layer("false_conv_%d_%d" % (i, di)).set_weights([numpy.eye(sz).reshape((sz, 1, sz))])
 
-    
-    
-    def _set_model_layers(self, X, ts_sz, d, n_classes):
+    def _set_model_layers_helper(self, X, ts_sz, d, n_classes):
+
         inputs = [Input(shape=(ts_sz, 1), name="input_%d" % di) for di in range(d)]
         shapelet_sizes = sorted(self.n_shapelets_per_size.keys())
         pool_layers = []
@@ -512,6 +574,33 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         else:
             concatenated_features = pool_layers[0]
             concatenated_locations = pool_layers_locations[0]
+        return inputs, concatenated_features, concatenated_locations
+
+    def _set_model_layers_hp_opt(self, X, ts_sz, d, n_classes):
+        '''
+            Set model layers with HP tuning
+                Tune:   number of layers, number of hidden units, activation function, optimizer, learning rate
+                        batch size, epochs, dropout, regularization
+        '''
+        inputs, concatenated_features, concatenated_locations = self._set_model_layers_helper(X, ts_sz, d, n_classes)
+
+        # try different L2 weight regularizers
+        outputs = Dense(units=n_classes if n_classes > 2 else 1,
+                        activation="softmax" if n_classes > 2 else "sigmoid",
+                        kernel_regularizer=l2({{choice([.001, .01, .1, 1])}}),
+                        name="classification")(concatenated_features)
+        self.model = Model(inputs=inputs, outputs=outputs)
+        self.transformer_model = Model(inputs=inputs, outputs=concatenated_features)
+        self.locator_model = Model(inputs=inputs, outputs=concatenated_locations)
+
+        # try different optimizers first, then try different learning rates
+        self.model.compile(loss="categorical_crossentropy" if n_classes > 2 else "binary_crossentropy",
+                           optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}},
+                           metrics=[categorical_accuracy, categorical_crossentropy] if n_classes > 2
+                           else [binary_accuracy, binary_crossentropy])
+
+    def _set_model_layers(self, X, ts_sz, d, n_classes):
+        inputs, concatenated_features, concatenated_locations = self._set_model_layers_helper(X, ts_sz, d, n_classes)
         outputs = Dense(units=n_classes if n_classes > 2 else 1,
                         activation="softmax" if n_classes > 2 else "sigmoid",
                         kernel_regularizer=l2(self.weight_regularizer) if self.weight_regularizer > 0 else None,
@@ -519,6 +608,8 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self.model = Model(inputs=inputs, outputs=outputs)
         self.transformer_model = Model(inputs=inputs, outputs=concatenated_features)
         self.locator_model = Model(inputs=inputs, outputs=concatenated_locations)
+
+        # try different optimizers
         self.model.compile(loss="categorical_crossentropy" if n_classes > 2 else "binary_crossentropy",
                            optimizer=self.optimizer,
                            metrics=[categorical_accuracy, categorical_crossentropy] if n_classes > 2
