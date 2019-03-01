@@ -13,7 +13,7 @@ from keras.regularizers import l2
 from keras.initializers import Initializer
 import keras.backend as K
 from keras.engine import InputSpec
-from keras.callbacks import (ModelCheckpoint, ReduceLROnPlateau, TensorBoard, TerminateOnNan, EarlyStopping)
+from keras.callbacks import (ModelCheckpoint, ReduceLROnPlateau, TensorBoard, TerminateOnNaN, EarlyStopping)
 import os
 from datetime import datetime
 import time
@@ -334,7 +334,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         return os.path.join(data_dir, 'weights', data_fname + '_{epoch:02d}-{val_loss:.4f}.h5')
 
     def _get_callbacks(self, source_dir, batch_size, chkpt_period = 1):
-        terminate_on_nan = TerminateOnNan()
+        terminate_on_nan = TerminateOnNaN()
 
         timestamp = self._get_timestamp()
         tb_logdir = 'logs/{0}'.format(timestamp)
