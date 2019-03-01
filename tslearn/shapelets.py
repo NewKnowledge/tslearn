@@ -395,7 +395,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                                        optimizer=self.optimizer)
         self.locator_model.compile(loss="mean_squared_error",
                                    optimizer=self.optimizer)
-        self._set_weights_false_conv(d=d)
+        self._set_weights_false_conv(d=self.d)
 
         # generate training and validation sets
         # if data is chronologically ordered - take first 70% as training, last 30% as validation
