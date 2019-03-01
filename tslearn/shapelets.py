@@ -399,7 +399,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
         # generate training and validation sets
         # if data is chronologically ordered - take first 70% as training, last 30% as validation
-        split = train_split * X.shape[0]
+        split = int(train_split * X.shape[0])
         train_gen = ShapeletSequence(X[:split], y[:split], self.batch_size, shuffle=True, random_state=self.random_state)
         val_gen = ShapeletSequence(X[split:], y[split:], self.batch_size, shuffle=True, random_state=self.random_state)
 
