@@ -111,7 +111,7 @@ class LocalSquaredDistanceLayer(Layer):
     """
     def __init__(self, n_shapelets, X=None, **kwargs):
         self.n_shapelets = n_shapelets
-        if X is None or K._BACKEND != "tensorflow":
+        if X is None or K.backend() != "tensorflow":
             self.initializer = "uniform"
         else:
             self.initializer = KMeansShapeletInitializer(X)
@@ -340,11 +340,12 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         tb_logdir = 'logs/{0}'.format(timestamp)
         tensorboard = TensorBoard(tb_logdir, histogram_freq = 0, batch_size = batch_size)
         reducelr = ReduceLROnPlateau(factor = 0.2, patience = 3)
-        checkpoint_path = self._get_checkpoint_path(source_dir, timestamp)
-        chkpt_dir = os.path.split(checkpoint_path)[0]
-        if not os.path.isdir(chkpt_dir):
-            os.makedirs(chkpt_dir)
-        checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period)
+        if source_dir is not None:
+            checkpoint_path = self._get_checkpoint_path(source_dir, timestamp)
+            chkpt_dir = os.path.split(checkpoint_path)[0]
+            if not os.path.isdir(chkpt_dir):
+                os.makedirs(chkpt_dir)
+            checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period)
         earlystopping = EarlyStopping(monitor = 'val_loss', patience =100)
 
         return [terminate_on_nan, reducelr] # add in earlystopping, tensorboard, checkpointer for real training runs
@@ -378,7 +379,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         
         return n_ts, sz, n_classes
 
-    def fit(self, X, y, source_dir, train_split = 0.7):
+    def fit(self, X, y, source_dir = None, val_split = 0.3):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -389,7 +390,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         y : array-like of shape=(n_ts, )
             Time series labels.
         """
-        _, sz, n_classes = self._fit_helper(X, y)
+        n_ts, sz, n_classes = self._fit_helper(X, y)
         self._set_model_layers(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
         self.transformer_model.compile(loss="mean_squared_error",
                                        optimizer=self.optimizer)
@@ -397,22 +398,19 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                                    optimizer=self.optimizer)
         self._set_weights_false_conv(d=self.d)
 
-        # generate training and validation sets
-        # if data is chronologically ordered - take first 70% as training, last 30% as validation
-        split = int(train_split * X.shape[0])
-        train_gen = ShapeletSequence(X[:split], y[:split], self.batch_size, shuffle=True, random_state=self.random_state)
-        val_gen = ShapeletSequence(X[split:], y[split:], self.batch_size, shuffle=True, random_state=self.random_state)
-
         callbacks = self._get_callbacks(source_dir, self.batch_size)
-        self.model.fit_generator(train_gen, validation_data = val_gen, 
+        print('Before fitting')
+        history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y, 
+                       validation_split = val_split,
                        callbacks = callbacks,
                        epochs=self.max_iter,
-                       verbose=self.verbose_level, 
-                       workers = 10, 
-                       use_multiprocessing = True)
+                       batch_size = self.batch_size,
+                       verbose=self.verbose_level,
+                       shuffle = True)
+        print(history.history.keys())
         return self
 
-    def fit_hp_opt(self, X, y, source_dir, train_split = 0.7, epochs = 100):
+    def fit_hp_opt(self, X, y, source_dir, val_split = 0.7, epochs = 100):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -432,19 +430,14 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_weights_false_conv(d=self.d)
 
         # for HP tuning simply fit once, no generator
-        split = train_split * X.shape[0]
-        X_train, y_train = X[:split], y[:split]
-        X_val, y_val = X[split:], y[split:]
-        #train_gen = ShapeletSequence(X[:split], y[:split], self.batch_size, shuffle=True, random_state=self.random_state)
-        #val_gen = ShapeletSequence(X[split:], y[split:], self.batch_size, shuffle=True, random_state=self.random_state)
-
-        #callbacks = self._get_callbacks(source_dir, self.batch_size)
-
+        callbacks = self._get_callbacks(source_dir, self.batch_size)
+        
         self.model.fit([X_train[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_train,
                        batch_size = {{choice([64, 128, 256, 512])}},
                        epochs=epochs,
+                       shuffle=True,
                        verbose=self.verbose_level, 
-                       validation_data = (X_val, y_val)
+                       validation_split = val_split)
                        )
         _, acc = self.model.evaluate(X_val, y_val, show_accuracy = True, verbose = 0)
         best_run, best_model = optim.minimize(model = {'loss':-acc, 'status': STATUS_OK, 'model': self.model}, 
@@ -609,7 +602,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self.model.compile(loss="categorical_crossentropy" if n_classes > 2 else "binary_crossentropy",
                            optimizer=self.optimizer,
                            metrics=[categorical_accuracy, categorical_crossentropy] if n_classes > 2
-                           else [binary_accuracy, binary_crossentropy])
+                           else [binary_accuracy, binary_crossentropy,])
 
     def get_weights(self, layer_name=None):
         """Return model weights (or weights for a given layer if `layer_name` is provided).
@@ -748,23 +741,19 @@ class ShapeletSequence(Sequence):
         y_set: set of output time series label
     '''
 
-    def __init__(self, x_set, y_set, batch_size=256, shuffle = True, random_state = None):
+    def __init__(self, x_set, y_set, batch_size=256):
         self.batch_size = batch_size
-        if shuffle:
-            numpy.random.seed(seed=random_state)
-            inds = numpy.arange(x_set.shape[0])
-            numpy.random.shuffle(inds)
-            self.x = x_set[inds]
-            self.y = y.set[inds]
-        else:
-            self.x = x_set
-            self.y = y.set
+        self.x = x_set
+        self.y = y_set
+        print('x shape in sequence gen {}'.format(self.x.shape))
 
     def __len__(self):
-        return int(np.ceil(len(self.x) / float(self.batch_size)))
+        return int(numpy.ceil(len(self.x) / float(self.batch_size)))
 
     def __getitem__(self, idx):
         batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
-
-        return numpy.array([batch_x[:, :, di].reshape((self.x.shape[0], self.x.shape[1], 1)) for di in range(self.x.shape[2])]), numpy.array(batch_y)
+        print("index {}".format(idx))
+        print("batch_x shape in sequence gen {}".format(batch_x.shape))
+        print("reshaped batch x {}".format(batch_x[:, :, 0].reshape((self.batch_x.shape[0], self.batch_x.shape[1], 1))))
+        return numpy.array([batch_x[:, :, di].reshape((self.batch_x.shape[0], self.batch_x.shape[1], 1)) for di in range(self.x.shape[2])]), numpy.array(batch_y)
