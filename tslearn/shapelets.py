@@ -325,13 +325,17 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             shapelets[i, :sz, :] = non_formatted_shapelets[i]
         return shapelets
 
+    def clear_session(self):
+        K.clear_session()
+        return
+
     def _get_timestamp(self):
         return datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d_%H-%M-%S')
 
     def _get_checkpoint_path(self, source_dir, timestamp):
         data_dir, data_fname = os.path.split(source_dir)
         data_fname += timestamp
-        return os.path.join(data_dir, 'weights', data_fname + '_{epoch:02d}-{val_loss:.4f}.h5')
+        return os.path.join(data_dir, 'checkpoints', data_fname + '_{epoch:02d}-{val_loss:.4f}.h5')
 
     def _get_callbacks(self, source_dir, batch_size, chkpt_period = 1):
         terminate_on_nan = TerminateOnNaN()
@@ -345,10 +349,10 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             chkpt_dir = os.path.split(checkpoint_path)[0]
             if not os.path.isdir(chkpt_dir):
                 os.makedirs(chkpt_dir)
-            checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period)
-        earlystopping = EarlyStopping(monitor = 'val_loss', patience =100)
+            checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period, monitor='val_loss', save_best_only=True, mode = 'min')
+        earlystopping = EarlyStopping(monitor = 'val_loss', patience =10)
 
-        return [terminate_on_nan, reducelr] # add in earlystopping, tensorboard, checkpointer for real training runs
+        return [terminate_on_nan, reducelr, checkpointer, earlystopping] # add in tensorboard for real training runs
 
     def _fit_helper(self, X, y):
         """Learn time-series shapelets.
@@ -379,6 +383,13 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         
         return n_ts, sz, n_classes
 
+    def generate_model(self, sz, n_classes):
+        '''
+            Generate structure of model used for Shapelet classifier
+        '''
+        self._set_model_layers(X=None, ts_sz=sz, d=self.d, n_classes=n_classes)
+        return self.model
+
     def fit(self, X, y, source_dir = None, val_split = 0.3):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
@@ -388,7 +399,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         X : array-like of shape=(n_ts, sz, d)
             Time series dataset.
         y : array-like of shape=(n_ts, )
-            Time series labels.
+            Time series labels.fit
         """
         n_ts, sz, n_classes = self._fit_helper(X, y)
         self._set_model_layers(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
@@ -399,7 +410,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_weights_false_conv(d=self.d)
 
         callbacks = self._get_callbacks(source_dir, self.batch_size)
-        print('Before fitting')
         history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y, 
                        validation_split = val_split,
                        callbacks = callbacks,
@@ -407,7 +417,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        batch_size = self.batch_size,
                        verbose=self.verbose_level,
                        shuffle = True)
-        print(history.history.keys())
         return self
 
     def fit_hp_opt(self, X, y, source_dir, val_split = 0.7, epochs = 100):
@@ -438,7 +447,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        shuffle=True,
                        verbose=self.verbose_level, 
                        validation_split = val_split)
-                       )
         _, acc = self.model.evaluate(X_val, y_val, show_accuracy = True, verbose = 0)
         best_run, best_model = optim.minimize(model = {'loss':-acc, 'status': STATUS_OK, 'model': self.model}, 
             data = (lambda: X_train, y_train, X_val, y_val), algo = tpe.suggest, max_evals = 10, trials = Trials())
@@ -753,7 +761,4 @@ class ShapeletSequence(Sequence):
     def __getitem__(self, idx):
         batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
-        print("index {}".format(idx))
-        print("batch_x shape in sequence gen {}".format(batch_x.shape))
-        print("reshaped batch x {}".format(batch_x[:, :, 0].reshape((self.batch_x.shape[0], self.batch_x.shape[1], 1))))
         return numpy.array([batch_x[:, :, di].reshape((self.batch_x.shape[0], self.batch_x.shape[1], 1)) for di in range(self.x.shape[2])]), numpy.array(batch_y)
