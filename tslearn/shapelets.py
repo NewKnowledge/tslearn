@@ -383,11 +383,11 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         
         return n_ts, sz, n_classes
 
-    def generate_model(self, sz, n_classes):
+    def generate_model(self, sz, n_classes, d = 1):
         '''
             Generate structure of model used for Shapelet classifier
         '''
-        self._set_model_layers(X=None, ts_sz=sz, d=self.d, n_classes=n_classes)
+        self._set_model_layers(X=None, ts_sz=sz, d = d, n_classes=n_classes)
         return self.model
 
     def fit(self, X, y, source_dir = None, val_split = 0.3):
