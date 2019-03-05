@@ -381,7 +381,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         else:
             n_classes = y_.shape[1]
         
-        return n_ts, sz, n_classes
+        return n_ts, sz, n_classes, y_
 
     def generate_model(self, sz, n_classes, d = 1):
         '''
@@ -401,7 +401,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         y : array-like of shape=(n_ts, )
             Time series labels.fit
         """
-        n_ts, sz, n_classes = self._fit_helper(X, y)
+        n_ts, sz, n_classes, y_ = self._fit_helper(X, y)
         self._set_model_layers(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
         self.transformer_model.compile(loss="mean_squared_error",
                                        optimizer=self.optimizer)
@@ -410,7 +410,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_weights_false_conv(d=self.d)
 
         callbacks = self._get_callbacks(source_dir, self.batch_size)
-        history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y, 
+        history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_, 
                        validation_split = val_split,
                        callbacks = callbacks,
                        epochs=self.max_iter,
