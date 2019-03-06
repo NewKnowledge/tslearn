@@ -4,7 +4,7 @@ The :mod:`tslearn.shapelets` module gathers Shapelet-based algorithms.
 It depends on the `keras` library for optimization.
 """
 
-from keras.models import Model
+from keras.models import Model, Sequential
 from keras.layers import Dense, Conv1D, Layer, Input, concatenate, add
 from keras.metrics import categorical_accuracy, categorical_crossentropy, binary_accuracy, binary_crossentropy
 from sklearn.preprocessing import LabelBinarizer
@@ -394,9 +394,57 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                                    optimizer=self.optimizer)
         return self.model
 
+    def fit_transfer_model(self, X, y, nclasses_prior, checkpoint, source_dir = None, val_data = None):    
+        """Learn time-series shapelets through transfer learning
+
+        Parameters
+        ----------
+        X : array-like of shape=(n_ts, sz, d)
+            Time series dataset.
+        y : array-like of shape=(n_ts, )
+            Time series labels.fit
+        """
+        n_ts, sz, n_classes, y_ = self._fit_helper(X, y)
+        _,_,_, y_val_ = self._fit_helper(val_data[0], val_data[1])
+
+        # load binary model
+        self.model = self.generate_model(X.shape[1], nclasses_prior, d = self.d)
+        self.model.load_weights(checkpoint)
+
+        # create new model for multiclass
+        new_output = Dense(units=n_classes if n_classes > 2 else 1,
+                        activation="softmax" if n_classes > 2 else "sigmoid",
+                        kernel_regularizer=l2(self.weight_regularizer) if self.weight_regularizer > 0 else None,
+                        name="transfer_classification")(self.model.outputs[0])
+        self.model = Model(inputs=self.model.inputs[0], outputs=new_output)
+
+        # only retrain the last layer
+        for layer in self.model.layers:
+            if layer.name is "transfer_classification":
+                layer.trainable = True
+            else:
+                layer.trainable = False
+        self.model.compile(loss="categorical_crossentropy" if n_classes > 2 else "binary_crossentropy",
+                           optimizer=self.optimizer,
+                           metrics=[categorical_accuracy, categorical_crossentropy] if n_classes > 2
+                           else [binary_accuracy, binary_crossentropy,])
+        
+
+        # train new model
+        callbacks = self._get_callbacks(source_dir, self.batch_size)
+        #train_gen = ShapeletSequence(X, y_, self.batch_size)
+        self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_, 
+                       validation_data = (val_data[0], y_val_),
+                       callbacks = callbacks,
+                       batch_size=self.batch_size,
+                       epochs=self.max_iter,
+                       verbose=self.verbose_level)
+                       #workers = 10,
+                       #use_multiprocessing = True)
+        return self
+
     def fit(self, X, y, source_dir = None, val_data = None):
         """Learn time-series shapelets.
-        Helper fit function that supports fit and fit_generator
 
         Parameters
         ----------
@@ -415,13 +463,15 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_weights_false_conv(d=self.d)
 
         callbacks = self._get_callbacks(source_dir, self.batch_size)
-        history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_, 
+        #train_gen = ShapeletSequence(X, y_, self.batch_size)
+        self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_,
                        validation_data = (val_data[0], y_val_),
                        callbacks = callbacks,
+                       batch_size=self.batch_size,
                        epochs=self.max_iter,
-                       batch_size = self.batch_size,
-                       verbose=self.verbose_level,
-                       shuffle = True)
+                       verbose=self.verbose_level)
+                       #workers = 10,
+                       #use_multiprocessing = True)
         return self
 
     def fit_hp_opt(self, X, y, source_dir, val_data = None, epochs = 100):
@@ -758,7 +808,6 @@ class ShapeletSequence(Sequence):
         self.batch_size = batch_size
         self.x = x_set
         self.y = y_set
-        print('x shape in sequence gen {}'.format(self.x.shape))
 
     def __len__(self):
         return int(numpy.ceil(len(self.x) / float(self.batch_size)))
@@ -766,4 +815,4 @@ class ShapeletSequence(Sequence):
     def __getitem__(self, idx):
         batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
-        return numpy.array([batch_x[:, :, di].reshape((self.batch_x.shape[0], self.batch_x.shape[1], 1)) for di in range(self.x.shape[2])]), numpy.array(batch_y)
+        return [batch_x[:, :, di].reshape((batch_x.shape[0], batch_x.shape[1], 1)) for di in range(self.x.shape[2])], batch_y
