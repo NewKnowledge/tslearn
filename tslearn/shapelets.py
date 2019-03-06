@@ -390,7 +390,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         self._set_model_layers(X=None, ts_sz=sz, d = d, n_classes=n_classes)
         return self.model
 
-    def fit(self, X, y, source_dir = None, val_split = 0.3):
+    def fit(self, X, y, source_dir = None, val_data = None):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -411,7 +411,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
         callbacks = self._get_callbacks(source_dir, self.batch_size)
         history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_, 
-                       validation_split = val_split,
+                       validation_data = val_data,
                        callbacks = callbacks,
                        epochs=self.max_iter,
                        batch_size = self.batch_size,
@@ -419,7 +419,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        shuffle = True)
         return self
 
-    def fit_hp_opt(self, X, y, source_dir, val_split = 0.7, epochs = 100):
+    def fit_hp_opt(self, X, y, source_dir, val_data = None, epochs = 100):
         """Learn time-series shapelets.
         Helper fit function that supports fit and fit_generator
 
@@ -446,7 +446,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        epochs=epochs,
                        shuffle=True,
                        verbose=self.verbose_level, 
-                       validation_split = val_split)
+                       validation_data = val_data)
         _, acc = self.model.evaluate(X_val, y_val, show_accuracy = True, verbose = 0)
         best_run, best_model = optim.minimize(model = {'loss':-acc, 'status': STATUS_OK, 'model': self.model}, 
             data = (lambda: X_train, y_train, X_val, y_val), algo = tpe.suggest, max_evals = 10, trials = Trials())
