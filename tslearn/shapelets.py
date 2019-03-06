@@ -402,6 +402,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             Time series labels.fit
         """
         n_ts, sz, n_classes, y_ = self._fit_helper(X, y)
+        _,_,_, y_val_ = self._fit_helper(val_data[0], val_data[1])
         self._set_model_layers(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
         self.transformer_model.compile(loss="mean_squared_error",
                                        optimizer=self.optimizer)
@@ -411,7 +412,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
 
         callbacks = self._get_callbacks(source_dir, self.batch_size)
         history = self.model.fit([X[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_, 
-                       validation_data = val_data,
+                       validation_data = (val_data[0], y_val_),
                        callbacks = callbacks,
                        epochs=self.max_iter,
                        batch_size = self.batch_size,
