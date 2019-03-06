@@ -388,6 +388,10 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             Generate structure of model used for Shapelet classifier
         '''
         self._set_model_layers(X=None, ts_sz=sz, d = d, n_classes=n_classes)
+        self.transformer_model.compile(loss="mean_squared_error",
+                                       optimizer=self.optimizer)
+        self.locator_model.compile(loss="mean_squared_error",
+                                   optimizer=self.optimizer)
         return self.model
 
     def fit(self, X, y, source_dir = None, val_data = None):
