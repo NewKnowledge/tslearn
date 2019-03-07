@@ -415,7 +415,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         new_output = Dense(units=n_classes if n_classes > 2 else 1,
                         activation="softmax" if n_classes > 2 else "sigmoid",
                         kernel_regularizer=l2(self.weight_regularizer) if self.weight_regularizer > 0 else None,
-                        name="transfer_classification")(self.model.outputs[0])
+                        name="transfer_classification")(self.transformer_model.outputs[0])
         self.model = Model(inputs=self.model.inputs[0], outputs=new_output)
 
         # only retrain the last layer
