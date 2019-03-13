@@ -350,9 +350,9 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             if not os.path.isdir(chkpt_dir):
                 os.makedirs(chkpt_dir)
             checkpointer = ModelCheckpoint(checkpoint_path, period=chkpt_period, monitor='val_loss', save_best_only=True, mode = 'min')
-        earlystopping = EarlyStopping(monitor = 'val_loss', patience =10)
+        earlystopping = EarlyStopping(monitor = 'val_loss', patience =100)
 
-        return [terminate_on_nan, reducelr, checkpointer, earlystopping] # add in tensorboard for real training runs
+        return [terminate_on_nan, reducelr, earlystopping]# checkpointer, earlystopping] # add in tensorboard for real training runs
 
     def _fit_helper(self, X, y):
         """Learn time-series shapelets.
@@ -387,6 +387,7 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
         '''
             Generate structure of model used for Shapelet classifier
         '''
+        self.d = d
         self._set_model_layers(X=None, ts_sz=sz, d = d, n_classes=n_classes)
         self.transformer_model.compile(loss="mean_squared_error",
                                        optimizer=self.optimizer)
@@ -634,7 +635,33 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                 Tune:   number of layers, number of hidden units, activation function, optimizer, learning rate
                         batch size, epochs, dropout, regularization
         '''
-        inputs, concatenated_features, concatenated_locations = self._set_model_layers_helper(X, ts_sz, d, n_classes)
+        inputs = [Input(shape=(ts_sz, 1), name="input_%d" % di) for di in range(d)]
+        shapelet_sizes = sorted(self.n_shapelets_per_size.keys())
+        pool_layers = []
+        pool_layers_locations = []
+        min_length = hp.choice('a', [])
+        for i,sz in enumerate(sorted(shapelet_sizes)):
+            transformer_layers = [Conv1D(filters=sz,
+                                         kernel_size=sz,
+                                         trainable=False,
+                                         use_bias=False,
+                                         name="false_conv_%d_%d" % (i, di))(inputs[di]) for di in range(d)]
+            shapelet_layers = [LocalSquaredDistanceLayer({{choice([int(.05*ts_sz), int(.1*ts_sz), int(.15*ts_sz), int(.2*ts_sz), int(.25*ts_sz)])}},
+                                                         X=X,
+                                                         name="shapelets_%d_%d" % (i, di))(transformer_layers[di])
+                               for di in range(d)]
+            if d == 1:
+                summed_shapelet_layer = shapelet_layers[0]
+            else:
+                summed_shapelet_layer = add(shapelet_layers)
+            pool_layers.append(GlobalMinPooling1D(name="min_pooling_%d" % i)(summed_shapelet_layer))
+            pool_layers_locations.append(GlobalArgminPooling1D(name="min_pooling_%d" % i)(summed_shapelet_layer))
+        if len(shapelet_sizes) > 1:
+            concatenated_features = concatenate(pool_layers)
+            concatenated_locations = concatenate(pool_layers_locations)
+        else:
+            concatenated_features = pool_layers[0]
+            concatenated_locations = pool_layers_locations[0]
 
         # try different L2 weight regularizers
         outputs = Dense(units=n_classes if n_classes > 2 else 1,
