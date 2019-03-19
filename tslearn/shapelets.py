@@ -475,41 +475,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
                        #use_multiprocessing = True)
         return self
 
-    def fit_hp_opt(self, X, y, source_dir, val_data = None, epochs = 100):
-        """Learn time-series shapelets.
-        Helper fit function that supports fit and fit_generator
-
-        Parameters
-        ----------
-        X : array-like of shape=(n_ts, sz, d)
-            Time series dataset.
-        y : array-like of shape=(n_ts, )
-            Time series labels.
-        """
-        n_ts, sz, n_classes = self._fit_helper(X, y)
-        self._set_model_layers_hp_opt(X=X, ts_sz=sz, d=self.d, n_classes=n_classes)
-        self.transformer_model.compile(loss="mean_squared_error",
-                                       optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}})
-        self.locator_model.compile(loss="mean_squared_error",
-                                   optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}})
-        self._set_weights_false_conv(d=self.d)
-
-        # for HP tuning simply fit once, no generator
-        callbacks = self._get_callbacks(source_dir, self.batch_size)
-        
-        self.model.fit([X_train[:,:,di].reshape((n_ts, sz, 1)) for di in range(self.d)], y_train,
-                       batch_size = {{choice([64, 128, 256, 512])}},
-                       epochs=epochs,
-                       shuffle=True,
-                       verbose=self.verbose_level, 
-                       validation_data = val_data)
-        _, acc = self.model.evaluate(X_val, y_val, show_accuracy = True, verbose = 0)
-        best_run, best_model = optim.minimize(model = {'loss':-acc, 'status': STATUS_OK, 'model': self.model}, 
-            data = (lambda: X_train, y_train, X_val, y_val), algo = tpe.suggest, max_evals = 10, trials = Trials())
-        print('Best performing model chosen hyper-parameters:')
-        print(best_run)
-        return best_run, best_model
-
     def predict(self, X):
         """Predict class for a given set of time series.
 
@@ -628,55 +593,6 @@ class ShapeletModel(BaseEstimator, ClassifierMixin):
             concatenated_features = pool_layers[0]
             concatenated_locations = pool_layers_locations[0]
         return inputs, concatenated_features, concatenated_locations
-
-    def _set_model_layers_hp_opt(self, X, ts_sz, d, n_classes):
-        '''
-            Set model layers with HP tuning
-                Tune:   number of layers, number of hidden units, activation function, optimizer, learning rate
-                        batch size, epochs, dropout, regularization
-        '''
-        inputs = [Input(shape=(ts_sz, 1), name="input_%d" % di) for di in range(d)]
-        shapelet_sizes = sorted(self.n_shapelets_per_size.keys())
-        pool_layers = []
-        pool_layers_locations = []
-        min_length = hp.choice('a', [])
-        for i,sz in enumerate(sorted(shapelet_sizes)):
-            transformer_layers = [Conv1D(filters=sz,
-                                         kernel_size=sz,
-                                         trainable=False,
-                                         use_bias=False,
-                                         name="false_conv_%d_%d" % (i, di))(inputs[di]) for di in range(d)]
-            shapelet_layers = [LocalSquaredDistanceLayer({{choice([int(.05*ts_sz), int(.1*ts_sz), int(.15*ts_sz), int(.2*ts_sz), int(.25*ts_sz)])}},
-                                                         X=X,
-                                                         name="shapelets_%d_%d" % (i, di))(transformer_layers[di])
-                               for di in range(d)]
-            if d == 1:
-                summed_shapelet_layer = shapelet_layers[0]
-            else:
-                summed_shapelet_layer = add(shapelet_layers)
-            pool_layers.append(GlobalMinPooling1D(name="min_pooling_%d" % i)(summed_shapelet_layer))
-            pool_layers_locations.append(GlobalArgminPooling1D(name="min_pooling_%d" % i)(summed_shapelet_layer))
-        if len(shapelet_sizes) > 1:
-            concatenated_features = concatenate(pool_layers)
-            concatenated_locations = concatenate(pool_layers_locations)
-        else:
-            concatenated_features = pool_layers[0]
-            concatenated_locations = pool_layers_locations[0]
-
-        # try different L2 weight regularizers
-        outputs = Dense(units=n_classes if n_classes > 2 else 1,
-                        activation="softmax" if n_classes > 2 else "sigmoid",
-                        kernel_regularizer=l2({{choice([.001, .01, .1, 1])}}),
-                        name="classification")(concatenated_features)
-        self.model = Model(inputs=inputs, outputs=outputs)
-        self.transformer_model = Model(inputs=inputs, outputs=concatenated_features)
-        self.locator_model = Model(inputs=inputs, outputs=concatenated_locations)
-
-        # try different optimizers first, then try different learning rates
-        self.model.compile(loss="categorical_crossentropy" if n_classes > 2 else "binary_crossentropy",
-                           optimizer={{choice(['adam', 'adagrad', 'rmsprop', 'sgd'])}},
-                           metrics=[categorical_accuracy, categorical_crossentropy] if n_classes > 2
-                           else [binary_accuracy, binary_crossentropy])
 
     def _set_model_layers(self, X, ts_sz, d, n_classes):
         inputs, concatenated_features, concatenated_locations = self._set_model_layers_helper(X, ts_sz, d, n_classes)
