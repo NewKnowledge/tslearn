@@ -1,6 +1,4 @@
-from setuptools import setup, Extension
-import numpy
-import tslearn
+from setuptools import setup
 
 setup(
     name="tslearn",
